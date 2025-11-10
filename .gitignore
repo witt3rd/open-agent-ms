@@ -52,3 +52,14 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# User secrets and sensitive config
+appsettings.Development.json
+secrets.json
+*.user.json
+
+# Local model files (can be large)
+*.gguf
+*.onnx
+models/
+*.safetensors
