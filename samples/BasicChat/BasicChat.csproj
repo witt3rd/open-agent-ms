@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\OpenAgent.Core\OpenAgent.Core.csproj" />
+    <ProjectReference Include="..\..\src\OpenAgent.Providers\OpenAgent.Providers.csproj" />
+    <ProjectReference Include="..\..\src\OpenAgent.Tools\OpenAgent.Tools.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Configuration -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>
