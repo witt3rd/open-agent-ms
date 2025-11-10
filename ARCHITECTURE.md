@@ -8,60 +8,85 @@ Windows C# implementation of an Open Agent using an **imperative agent loop** pa
 
 ## Architecture
 
+**Key Design Principle**: The agentic core (`OpenAgent.Core`) is completely **frontend-agnostic**, enabling multiple UI paradigms (CLI, GUI, API, MCP) to consume the same agent logic.
+
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  User Application / CLI                  │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│              OpenAgent.Core (Agent Loop)                 │
-│  ┌───────────────────────────────────────────────────┐  │
-│  │  while (!done) {                                  │  │
-│  │    1. Gather context (tools, knowledge, history) │  │
-│  │    2. Take action (LLM call with tools)          │  │
-│  │    3. Execute tools (with permission hooks)      │  │
-│  │    4. Verify/check completion                    │  │
-│  │  }                                                │  │
-│  └───────────────────────────────────────────────────┘  │
-│  - IAsyncEnumerable<Message> streaming                   │
-│  - Hook system (pre/post tool use)                       │
-│  - Multi-turn conversation state                         │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│         OpenAgent.Providers (Unified Abstraction)        │
-│                                                           │
-│  Microsoft.Extensions.AI.IChatClient                      │
-│  ├─ CompleteAsync(messages, options, cancellationToken)  │
-│  └─ CompleteStreamingAsync(messages, ...)                │
-│                                                           │
-│  Middleware Pipeline:                                     │
-│  ├─ Function calling middleware                          │
-│  ├─ Caching middleware (distributed/in-memory)           │
-│  ├─ Telemetry/logging middleware                         │
-│  ├─ Retry/resilience middleware                          │
-│  └─ Rate limiting middleware                             │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────┐
-│              Provider Implementations                    │
-│                                                           │
-│  CLOUD PROVIDERS:                                         │
-│  ├─ OpenAI (Microsoft.Extensions.AI.OpenAI)             │
-│  ├─ Azure OpenAI (Microsoft.Extensions.AI.OpenAI)       │
-│  ├─ Anthropic (Anthropic.SDK → IChatClient adapter)     │
-│  ├─ Google Gemini (GeminiDotnet.Extensions.AI)          │
-│  ├─ AWS Bedrock (Amazon.BedrockRuntime → adapter)       │
-│  └─ OpenRouter (OpenRouter.NET → IChatClient adapter)   │
-│                                                           │
-│  LOCAL PROVIDERS:                                         │
-│  ├─ Ollama (OllamaSharp → IChatClient)                  │
-│  ├─ Llama.cpp (LLamaSharp → IChatClient adapter)        │
-│  └─ Windows ML/ONNX (OnnxRuntimeGenAI.DirectML adapter) │
-└───────────────────────────────────────────────────────────┘
+┌──────────────────────────────── FRONTENDS ────────────────────────────────┐
+│                                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │ CLI / REPL  │  │   WinUI3    │  │  REST API   │  │ MCP Server  │      │
+│  │  (Console)  │  │  (Desktop)  │  │  (ASP.NET)  │  │   (Tools)   │      │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │
+│         │                │                │                │              │
+│         └────────────────┴────────────────┴────────────────┘              │
+│                                  │                                         │
+└──────────────────────────────────┼─────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     OpenAgent.Core (Frontend-Agnostic)                      │
+│  ┌───────────────────────────────────────────────────────────────────────┐ │
+│  │  Agent Loop: IAsyncEnumerable<AgentEvent> ExecuteAsync(...)          │ │
+│  │                                                                       │ │
+│  │  while (!done) {                                                     │ │
+│  │    1. Gather context (tools, knowledge, history)                    │ │
+│  │    2. Take action (LLM call with tools)                             │ │
+│  │    3. Execute tools (with permission hooks)                         │ │
+│  │    4. Yield events: ModelResponse, ToolExecution, etc.              │ │
+│  │    5. Check completion                                              │ │
+│  │  }                                                                   │ │
+│  └───────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+│  Event Types (for frontend consumption):                                   │
+│  - AgentEvent.GatheringContext                                             │
+│  - AgentEvent.CallingModel                                                 │
+│  - AgentEvent.ModelResponse(message)                                       │
+│  - AgentEvent.ExecutingTool(name, args)                                    │
+│  - AgentEvent.ToolResult(name, result)                                     │
+│  - AgentEvent.ToolDenied(name, reason)                                     │
+│  - AgentEvent.Completed(finalMessage)                                      │
+│  - AgentEvent.MaxTurnsReached                                              │
+│                                                                             │
+│  No Dependencies On:                                                        │
+│  ❌ Console I/O                                                             │
+│  ❌ HTTP/REST                                                               │
+│  ❌ UI frameworks                                                           │
+│  ❌ Specific serialization formats                                          │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│              OpenAgent.Providers (Unified LLM Abstraction)                  │
+│                                                                             │
+│  Microsoft.Extensions.AI.IChatClient                                        │
+│  ├─ CompleteAsync(messages, options, cancellationToken)                    │
+│  └─ CompleteStreamingAsync(messages, ...)                                  │
+│                                                                             │
+│  Middleware Pipeline:                                                       │
+│  ├─ Function calling middleware                                            │
+│  ├─ Caching middleware (distributed/in-memory)                             │
+│  ├─ Telemetry/logging middleware                                           │
+│  ├─ Retry/resilience middleware                                            │
+│  └─ Rate limiting middleware                                               │
+└─────────────────────────────────┬───────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Provider Implementations                             │
+│                                                                             │
+│  CLOUD PROVIDERS:                                                           │
+│  ├─ OpenAI (Microsoft.Extensions.AI.OpenAI)                                │
+│  ├─ Azure OpenAI (Microsoft.Extensions.AI.OpenAI)                          │
+│  ├─ Anthropic (Anthropic.SDK → IChatClient adapter)                        │
+│  ├─ Google Gemini (GeminiDotnet.Extensions.AI)                             │
+│  ├─ AWS Bedrock (Amazon.BedrockRuntime → adapter)                          │
+│  └─ OpenRouter (OpenRouter.NET → IChatClient adapter)                      │
+│                                                                             │
+│  LOCAL PROVIDERS:                                                           │
+│  ├─ Ollama (OllamaSharp → IChatClient)                                     │
+│  ├─ Llama.cpp (LLamaSharp → IChatClient adapter)                           │
+│  └─ Windows ML/ONNX (OnnxRuntimeGenAI.DirectML adapter)                    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
@@ -409,15 +434,296 @@ var options = new AgentOptions
 };
 ```
 
+## Frontend Isolation Pattern
+
+### Core Principle: Pure Business Logic
+
+**OpenAgent.Core** is completely **frontend-agnostic** with:
+- ❌ No `Console.WriteLine` or `Console.ReadLine`
+- ❌ No HTTP/REST dependencies (`Microsoft.AspNetCore.*`)
+- ❌ No UI framework dependencies (WinUI, WPF, etc.)
+- ❌ No serialization constraints (works with any format)
+- ✅ Only `IAsyncEnumerable<AgentEvent>` for streaming output
+- ✅ Pure dependency injection patterns
+- ✅ Testable without UI
+
+### Event-Driven Communication
+
+The core communicates with frontends via **AgentEvent** discriminated union:
+
+```csharp
+public abstract record AgentEvent
+{
+    // Contextual events
+    public record GatheringContext : AgentEvent;
+    public record CallingModel : AgentEvent;
+
+    // Model interaction
+    public record ModelResponse(ChatMessage Message) : AgentEvent;
+    public record ThinkingUpdate(string Thinking) : AgentEvent;
+
+    // Tool execution
+    public record ExecutingTool(string Name, object? Args) : AgentEvent;
+    public record ToolResult(string Name, object Result) : AgentEvent;
+    public record ToolDenied(string Name, string Reason) : AgentEvent;
+
+    // Completion
+    public record Completed(ChatMessage FinalMessage) : AgentEvent;
+    public record MaxTurnsReached : AgentEvent;
+    public record Error(Exception Exception) : AgentEvent;
+}
+```
+
+### Frontend Implementations
+
+Each frontend consumes `IAsyncEnumerable<AgentEvent>` differently:
+
+#### 1. CLI/REPL (OpenAgent.Cli)
+
+**Pattern**: Synchronous rendering to console
+
+```csharp
+await foreach (var evt in agent.ExecuteAsync(userPrompt))
+{
+    switch (evt)
+    {
+        case AgentEvent.ModelResponse(var msg):
+            ConsoleRenderer.RenderMessage(msg);
+            break;
+        case AgentEvent.ExecutingTool(var name, var args):
+            Console.WriteLine($"[Tool: {name}]");
+            break;
+        case AgentEvent.ThinkingUpdate(var thinking):
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.WriteLine($"Thinking: {thinking}");
+            Console.ResetColor();
+            break;
+    }
+}
+```
+
+**Dependencies**:
+- `System.CommandLine` for command parsing
+- `Spectre.Console` for rich terminal UI
+- Direct console output
+
+#### 2. WinUI3 Desktop (OpenAgent.WinUI)
+
+**Pattern**: MVVM with ObservableCollection
+
+```csharp
+public class ChatViewModel : ObservableObject
+{
+    public ObservableCollection<MessageViewModel> Messages { get; } = new();
+
+    private async Task SendMessageAsync(string userMessage)
+    {
+        Messages.Add(new MessageViewModel(userMessage, isUser: true));
+
+        var response = new MessageViewModel("", isAssistant: true);
+        Messages.Add(response);
+
+        await foreach (var evt in _agentLoop.ExecuteAsync(userMessage))
+        {
+            await DispatcherQueue.EnqueueAsync(() =>
+            {
+                switch (evt)
+                {
+                    case AgentEvent.ModelResponse(var msg):
+                        response.AppendText(msg.Text);
+                        break;
+                    case AgentEvent.ExecutingTool(var name, _):
+                        response.AppendToolIndicator(name);
+                        break;
+                }
+            });
+        }
+    }
+}
+```
+
+**Dependencies**:
+- `Microsoft.UI.Xaml` (WinUI 3)
+- `CommunityToolkit.Mvvm` for MVVM
+- `Microsoft.Extensions.DependencyInjection` for DI
+
+#### 3. REST API (OpenAgent.Api)
+
+**Pattern**: Server-Sent Events (SSE) for streaming
+
+```csharp
+[ApiController]
+[Route("api/chat")]
+public class ChatController : ControllerBase
+{
+    private readonly IAgentSessionManager _sessionManager;
+
+    [HttpPost("stream")]
+    public async Task StreamChat(
+        [FromBody] ChatRequest request,
+        CancellationToken ct)
+    {
+        Response.Headers.Add("Content-Type", "text/event-stream");
+        Response.Headers.Add("Cache-Control", "no-cache");
+
+        var agent = _sessionManager.GetOrCreate(request.SessionId);
+
+        await foreach (var evt in agent.ExecuteAsync(request.Message))
+        {
+            var json = JsonSerializer.Serialize(evt);
+            await Response.WriteAsync($"data: {json}\n\n", ct);
+            await Response.Body.FlushAsync(ct);
+        }
+    }
+
+    [HttpPost]
+    public async Task<ChatResponse> Chat(
+        [FromBody] ChatRequest request)
+    {
+        var agent = _sessionManager.GetOrCreate(request.SessionId);
+
+        var messages = new List<MessageDto>();
+        await foreach (var evt in agent.ExecuteAsync(request.Message))
+        {
+            if (evt is AgentEvent.ModelResponse(var msg))
+            {
+                messages.Add(new MessageDto(msg));
+            }
+        }
+
+        return new ChatResponse { Messages = messages };
+    }
+}
+```
+
+**Dependencies**:
+- `Microsoft.AspNetCore.App`
+- `System.Text.Json` for serialization
+- SignalR (optional, for WebSocket streaming)
+
+#### 4. MCP Server (OpenAgent.Mcp)
+
+**Pattern**: Expose agent as MCP resource and tools as MCP tools
+
+```csharp
+public class McpServer
+{
+    private readonly IToolRegistry _toolRegistry;
+
+    // Expose individual tools as MCP tools
+    public async Task<McpToolResponse> HandleToolCall(McpToolRequest request)
+    {
+        var result = await _toolRegistry.ExecuteAsync(
+            request.ToolName,
+            request.Arguments);
+
+        return new McpToolResponse
+        {
+            Content = result,
+            IsError = false
+        };
+    }
+
+    // Expose agent as MCP resource
+    public async IAsyncEnumerable<string> RunAgent(string prompt)
+    {
+        var agent = CreateAgent();
+
+        await foreach (var evt in agent.ExecuteAsync(prompt))
+        {
+            switch (evt)
+            {
+                case AgentEvent.ModelResponse(var msg):
+                    yield return msg.Text;
+                    break;
+                case AgentEvent.ExecutingTool(var name, _):
+                    yield return $"[Executing {name}]";
+                    break;
+            }
+        }
+    }
+}
+```
+
+**Dependencies**:
+- `ModelContextProtocol` SDK (when available)
+- `System.IO.Pipelines` for stdio transport
+- JSON-RPC implementation
+
+### Session Management
+
+For stateful frontends (API, WinUI), use `IAgentSession`:
+
+```csharp
+public interface IAgentSession
+{
+    string SessionId { get; }
+    IAsyncEnumerable<AgentEvent> ExecuteAsync(
+        string userMessage,
+        CancellationToken ct = default);
+    Task<ChatMessage[]> GetHistoryAsync();
+    Task ClearHistoryAsync();
+}
+
+public class AgentSession : IAgentSession
+{
+    private readonly List<ChatMessage> _history = new();
+    private readonly IChatClient _chatClient;
+    private readonly IToolRegistry _toolRegistry;
+    private readonly AgentOptions _options;
+
+    public async IAsyncEnumerable<AgentEvent> ExecuteAsync(
+        string userMessage,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        _history.Add(new ChatMessage(ChatRole.User, userMessage));
+
+        var agentLoop = new AgentLoop(_chatClient, _toolRegistry, _options);
+
+        await foreach (var evt in agentLoop.ExecuteAsync(_history, ct))
+        {
+            if (evt is AgentEvent.ModelResponse(var msg))
+            {
+                _history.Add(msg);
+            }
+
+            yield return evt;
+        }
+    }
+}
+```
+
+### Frontend Dependency Matrix
+
+| Feature | CLI | WinUI3 | REST API | MCP Server |
+|---------|-----|--------|----------|------------|
+| **Streaming** | ✅ Console | ✅ UI updates | ✅ SSE/SignalR | ✅ stdio |
+| **Sessions** | ❌ Single-shot | ✅ Per window | ✅ Per session | ⚠️ Per connection |
+| **History** | ❌ No state | ✅ In-memory | ✅ DB/Redis | ❌ No state |
+| **Auth** | ❌ N/A | ❌ N/A | ✅ JWT/OAuth | ⚠️ Per tool |
+| **UI Framework** | Spectre.Console | WinUI 3 | N/A | N/A |
+| **Deployment** | Portable exe | MSIX package | Docker/IIS | stdio service |
+
+### Benefits of This Architecture
+
+1. **Testability**: Core can be unit tested without UI
+2. **Flexibility**: Add new frontends (Blazor, MAUI, gRPC) easily
+3. **Portability**: Core works on any .NET platform
+4. **Separation**: UI concerns don't leak into business logic
+5. **Reusability**: Same agent logic across all interfaces
+
 ## Project Structure
 
 ```
 OpenAgentMS/
 ├── src/
+│   ├─── CORE (Frontend-Agnostic) ───────────────────────────────────────
+│   │
 │   ├── OpenAgent.Core/                          # Core agent loop
 │   │   ├── AgentLoop.cs                         # Main imperative loop
 │   │   ├── AgentOptions.cs                      # Configuration
-│   │   ├── AgentEvent.cs                        # Event types
+│   │   ├── AgentEvent.cs                        # Event types (for frontends)
+│   │   ├── IAgentSession.cs                     # Session abstraction
 │   │   ├── Hooks/
 │   │   │   ├── HookType.cs
 │   │   │   ├── HookCallback.cs
@@ -447,33 +753,72 @@ OpenAgentMS/
 │   │   ├── WebTools.cs                          # Fetch, Search
 │   │   └── CodeTools.cs                         # Analyze, Format
 │   │
-│   └── OpenAgent.Cli/                           # Console application
-│       ├── Program.cs                           # Entry point
-│       ├── Commands/                            # CLI commands
-│       │   ├── ChatCommand.cs
-│       │   ├── ConfigCommand.cs
-│       │   └── ProviderCommand.cs
-│       └── UI/
-│           └── ConsoleRenderer.cs               # Display agent events
+│   ├─── FRONTENDS (UI/API) ─────────────────────────────────────────────
+│   │
+│   ├── OpenAgent.Cli/                           # Console REPL
+│   │   ├── Program.cs                           # Entry point
+│   │   ├── Commands/                            # CLI commands
+│   │   │   ├── ChatCommand.cs
+│   │   │   ├── ConfigCommand.cs
+│   │   │   └── ProviderCommand.cs
+│   │   └── Rendering/
+│   │       ├── ConsoleRenderer.cs               # Display agent events
+│   │       └── MarkdownFormatter.cs             # Format responses
+│   │
+│   ├── OpenAgent.WinUI/                         # WinUI3 Desktop App
+│   │   ├── App.xaml[.cs]                        # WinUI app
+│   │   ├── MainWindow.xaml[.cs]                 # Main window
+│   │   ├── ViewModels/
+│   │   │   ├── ChatViewModel.cs                 # Chat UI state
+│   │   │   └── SettingsViewModel.cs             # Settings
+│   │   ├── Views/
+│   │   │   ├── ChatPage.xaml[.cs]              # Chat interface
+│   │   │   └── SettingsPage.xaml[.cs]          # Settings UI
+│   │   └── Services/
+│   │       └── AgentService.cs                  # Wraps AgentLoop
+│   │
+│   ├── OpenAgent.Api/                           # REST API (ASP.NET Core)
+│   │   ├── Program.cs                           # API entry point
+│   │   ├── Controllers/
+│   │   │   ├── ChatController.cs                # POST /chat
+│   │   │   ├── SessionController.cs             # Session mgmt
+│   │   │   └── ProviderController.cs            # Provider config
+│   │   ├── Models/
+│   │   │   ├── ChatRequest.cs
+│   │   │   ├── ChatResponse.cs
+│   │   │   └── StreamingChatResponse.cs         # SSE support
+│   │   ├── Services/
+│   │   │   └── AgentSessionManager.cs           # Manage sessions
+│   │   └── appsettings.json
+│   │
+│   └── OpenAgent.Mcp/                           # MCP Server
+│       ├── Program.cs                           # MCP server entry
+│       ├── McpServer.cs                         # MCP protocol impl
+│       ├── ToolAdapters/                        # Expose tools as MCP
+│       │   ├── FileToolAdapter.cs
+│       │   ├── BashToolAdapter.cs
+│       │   └── WebToolAdapter.cs
+│       └── McpAgentSession.cs                   # Agent as MCP resource
 │
 ├── tests/
 │   ├── OpenAgent.Core.Tests/
 │   ├── OpenAgent.Providers.Tests/
+│   ├── OpenAgent.Api.Tests/                     # API integration tests
 │   └── OpenAgent.Integration.Tests/
 │
 ├── samples/
-│   ├── BasicChat/
-│   ├── MultiProviderDemo/
-│   ├── CustomTools/
-│   └── LocalModels/
+│   ├── BasicChat/                               # Simple CLI chat
+│   ├── MultiProviderDemo/                       # Switch providers
+│   ├── CustomTools/                             # Add custom tools
+│   └── LocalModels/                             # Ollama/LLamaSharp
 │
 ├── docs/
 │   ├── ARCHITECTURE.md                          # This file
 │   ├── PROVIDERS.md                             # Provider setup guide
 │   ├── TOOLS.md                                 # Tool development guide
-│   └── HOOKS.md                                 # Hook usage guide
+│   ├── HOOKS.md                                 # Hook usage guide
+│   └── FRONTENDS.md                             # Frontend development guide
 │
-├── ARCHITECTURE.md
 ├── README.md
 ├── OpenAgentMS.sln
 └── .gitignore
